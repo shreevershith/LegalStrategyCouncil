@@ -1,12 +1,41 @@
-import React, { useState, useCallback } from 'react'
+/**
+ * Main Application Component
+ * 
+ * This is the root component that manages the application state and routing.
+ * It handles:
+ * - Case creation and submission
+ * - Server-Sent Events (SSE) connection for real-time updates
+ * - Agent status tracking
+ * - Phase management (landing, input, analyzing, complete)
+ * - Polling fallback mechanism to ensure data consistency
+ * 
+ * Application Flow:
+ * 1. Landing Page → User sees hero, features, FAQ
+ * 2. Case Input → User uploads PDF or fills form manually
+ * 3. Analyzing → Agents work on the case, updates via SSE
+ * 4. Complete → Final strategy and conflicts displayed
+ */
+import React, { useState, useCallback, useEffect } from 'react'
 import CaseInput from './components/CaseInput'
 import DebateView from './components/DebateView'
 import ConflictView from './components/ConflictView'
 import FinalStrategy from './components/FinalStrategy'
+import LandingPage from './components/LandingPage'
+import Footer from './components/Footer'
+import { Button } from './components/ui/button'
+import { Card } from './components/ui/card'
+import { Loader2, AlertCircle } from 'lucide-react'
+import { cn } from './lib/utils'
 
 const API_URL = '/api'
 
-// Agent names inspired by TV show "Suits"
+/**
+ * Initial agent state structure.
+ * Each agent has:
+ * - status: 'waiting' | 'thinking' | 'done'
+ * - content: The agent's analysis output (null until done)
+ * - role: Display name for the agent's role
+ */
 const INITIAL_AGENTS = {
   'Harvey': { status: 'waiting', content: null, role: 'Lead Strategist' },
   'Louis': { status: 'waiting', content: null, role: 'Precedent Expert' },
@@ -16,13 +45,100 @@ const INITIAL_AGENTS = {
 
 function App() {
   const [caseId, setCaseId] = useState(null)
-  const [currentPhase, setCurrentPhase] = useState('input') // input, analyzing, complete
+  const [currentPhase, setCurrentPhase] = useState('landing') // landing, input, analyzing, complete
   const [agents, setAgents] = useState(INITIAL_AGENTS)
   const [conflicts, setConflicts] = useState([])
   const [strategy, setStrategy] = useState(null)
   const [error, setError] = useState(null)
   const [deliberationRound, setDeliberationRound] = useState(0)
   const [totalRounds, setTotalRounds] = useState(0)
+
+  // Handle hash navigation
+  useEffect(() => {
+    const handleHashChange = () => {
+      if (window.location.hash === '#case-input') {
+        setCurrentPhase('input')
+      } else if (window.location.hash === '') {
+        setCurrentPhase('landing')
+      }
+    }
+    
+    handleHashChange()
+    window.addEventListener('hashchange', handleHashChange)
+    return () => window.removeEventListener('hashchange', handleHashChange)
+  }, [])
+
+  // Fetch case data periodically when analyzing to ensure we have latest state
+  useEffect(() => {
+    if (currentPhase === 'analyzing' && caseId) {
+      const fetchCaseData = async () => {
+        try {
+          const response = await fetch(`${API_URL}/cases/${caseId}`)
+          if (response.ok) {
+            const caseData = await response.json()
+            console.log('[Poll] Fetched case data:', caseData)
+            
+            // Update agents from arguments
+            if (caseData.arguments) {
+              caseData.arguments.forEach(arg => {
+                setAgents(prev => {
+                  if (prev[arg.agent]?.status !== 'done') {
+                    return {
+                      ...prev,
+                      [arg.agent]: { ...prev[arg.agent], status: 'done', content: arg.content }
+                    }
+                  }
+                  return prev
+                })
+              })
+            }
+            
+            // Update Tanner from counterarguments (use the latest one)
+            if (caseData.counterarguments && caseData.counterarguments.length > 0) {
+              const latestCounter = caseData.counterarguments[caseData.counterarguments.length - 1]
+              setAgents(prev => {
+                if (prev['Tanner']?.status !== 'done') {
+                  return {
+                    ...prev,
+                    'Tanner': { ...prev['Tanner'], status: 'done', content: latestCounter.content }
+                  }
+                }
+                return prev
+              })
+            }
+            
+            // Update Jessica from strategy
+            if (caseData.strategy) {
+              setAgents(prev => {
+                if (prev['Jessica']?.status !== 'done') {
+                  return {
+                    ...prev,
+                    'Jessica': { ...prev['Jessica'], status: 'done', content: caseData.strategy.final_strategy }
+                  }
+                }
+                return prev
+              })
+              setStrategy(caseData.strategy)
+              setCurrentPhase('complete')
+            }
+            
+            // Update conflicts
+            if (caseData.conflicts) {
+              setConflicts(caseData.conflicts)
+            }
+          }
+        } catch (e) {
+          console.error('[Poll] Failed to fetch case data:', e)
+        }
+      }
+      
+      // Poll every 3 seconds while analyzing
+      const interval = setInterval(fetchCaseData, 3000)
+      fetchCaseData() // Initial fetch
+      
+      return () => clearInterval(interval)
+    }
+  }, [currentPhase, caseId])
 
   const resetState = () => {
     setCaseId(null)
@@ -33,6 +149,7 @@ function App() {
     setError(null)
     setDeliberationRound(0)
     setTotalRounds(0)
+    window.location.hash = '#case-input'
   }
 
   const handleCaseSubmit = useCallback(async (caseData) => {
@@ -73,18 +190,22 @@ function App() {
 
       eventSource.addEventListener('agent_completed', (event) => {
         const data = JSON.parse(event.data)
-        console.log('[SSE] Agent completed:', data.agent, 'content type:', typeof data.content)
-        setAgents(prev => ({
-          ...prev,
-          [data.agent]: {
-            ...prev[data.agent],
-            status: 'done',
-            content: data.content,
-            attackVectors: data.attack_vectors,
-            rejectedAlternatives: data.rejected_alternatives,
-            round: data.round
+        console.log('[SSE] Agent completed:', data.agent, 'content type:', typeof data.content, 'full data:', data)
+        setAgents(prev => {
+          const updated = {
+            ...prev,
+            [data.agent]: {
+              ...prev[data.agent],
+              status: 'done',
+              content: data.content,
+              attackVectors: data.attack_vectors,
+              rejectedAlternatives: data.rejected_alternatives,
+              round: data.round
+            }
           }
-        }))
+          console.log('[SSE] Updated agents state:', updated)
+          return updated
+        })
       })
 
       eventSource.addEventListener('deliberation_round_started', (event) => {
@@ -122,22 +243,40 @@ function App() {
       })
 
       eventSource.onerror = async () => {
+        console.log('[SSE] Connection error, fetching existing data...')
         eventSource.close()
         // Try to fetch existing data if SSE fails
         try {
           const caseResponse = await fetch(`${API_URL}/cases/${result.case_id}`)
           if (caseResponse.ok) {
             const caseData = await caseResponse.json()
+            console.log('[SSE] Fetched case data:', caseData)
             // Update agents from existing data
             if (caseData.arguments) {
               caseData.arguments.forEach(arg => {
+                console.log('[SSE] Updating agent from argument:', arg.agent)
                 setAgents(prev => ({
                   ...prev,
                   [arg.agent]: { ...prev[arg.agent], status: 'done', content: arg.content }
                 }))
               })
             }
+            // Update Tanner from counterarguments
+            if (caseData.counterarguments && caseData.counterarguments.length > 0) {
+              const tannerCounter = caseData.counterarguments[caseData.counterarguments.length - 1]
+              console.log('[SSE] Updating Tanner from counterargument')
+              setAgents(prev => ({
+                ...prev,
+                'Tanner': { ...prev['Tanner'], status: 'done', content: tannerCounter.content }
+              }))
+            }
+            // Update Jessica from strategy
             if (caseData.strategy) {
+              console.log('[SSE] Updating Jessica from strategy')
+              setAgents(prev => ({
+                ...prev,
+                'Jessica': { ...prev['Jessica'], status: 'done', content: caseData.strategy.final_strategy }
+              }))
               setStrategy(caseData.strategy)
               setCurrentPhase('complete')
             }
@@ -156,65 +295,63 @@ function App() {
     }
   }, [])
 
+  // Show landing page
+  if (currentPhase === 'landing') {
+    return <LandingPage />
+  }
+
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="min-h-screen bg-background">
       {/* Header */}
-      <header className="bg-legal-primary text-white shadow-lg">
-        <div className="max-w-7xl mx-auto px-4 py-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h1 className="text-2xl font-bold tracking-tight">Legal Strategy Council</h1>
-              <p className="text-blue-200 text-sm mt-1">Multi-Agent Legal Analysis System • Inspired by Suits</p>
-            </div>
+      <header className="sticky top-0 z-50 w-full border-b border-border/40 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-6 lg:px-8">
+          <div>
+            <a href="/" className="text-lg font-semibold text-foreground hover:text-primary transition-colors">
+              Multi-Agent Legal Strategy Council
+            </a>
+            <p className="text-xs text-muted-foreground">Inspired by Suits</p>
+          </div>
+          <div className="flex items-center gap-4">
+            <a href="/" className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+              Home
+            </a>
             {currentPhase !== 'input' && (
-              <button
-                onClick={resetState}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-sm font-medium transition-colors"
-              >
+              <Button variant="outline" onClick={resetState}>
                 New Case
-              </button>
+              </Button>
             )}
           </div>
         </div>
       </header>
 
       {/* Main Content */}
-      <main className="max-w-7xl mx-auto px-4 py-8">
+      <main className="mx-auto max-w-7xl px-4 py-8 sm:px-6 lg:px-8">
         {error && (
-          <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">
-            <strong>Error:</strong> {error}
-          </div>
+          <Card className="mb-6 border-destructive/50 bg-destructive/10">
+            <div className="p-4 flex items-center gap-3">
+              <AlertCircle className="h-5 w-5 text-destructive" />
+              <div>
+                <p className="font-medium text-destructive">Error</p>
+                <p className="text-sm text-destructive/80">{error}</p>
+              </div>
+            </div>
+          </Card>
         )}
 
         {currentPhase === 'input' && (
-          <CaseInput onSubmit={handleCaseSubmit} />
+          <div id="case-input">
+            <CaseInput onSubmit={handleCaseSubmit} />
+          </div>
         )}
 
         {(currentPhase === 'analyzing' || currentPhase === 'complete') && (
           <div className="space-y-8">
-            {/* Deliberation Progress */}
-            {deliberationRound > 0 && currentPhase === 'analyzing' && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-4">
-                <div className="flex items-center gap-3">
-                  <div className="animate-pulse">
-                    <svg className="w-6 h-6 text-amber-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                    </svg>
-                  </div>
-                  <div>
-                    <p className="font-medium text-amber-800">
-                      Deliberation Round {deliberationRound} of {totalRounds}
-                    </p>
-                    <p className="text-sm text-amber-600">
-                      Harvey and Tanner are debating the strategy...
-                    </p>
-                  </div>
-                </div>
-              </div>
-            )}
-
             {/* Agent Debate View */}
-            <DebateView agents={agents} />
+            <DebateView 
+              agents={agents} 
+              deliberationRound={deliberationRound}
+              totalRounds={totalRounds}
+            />
 
             {/* Conflicts Section */}
             {conflicts.length > 0 && (
@@ -229,12 +366,9 @@ function App() {
             {/* Loading indicator when still analyzing */}
             {currentPhase === 'analyzing' && !strategy && (
               <div className="text-center py-8">
-                <div className="inline-flex items-center px-6 py-3 bg-blue-50 rounded-full">
-                  <svg className="animate-spin h-5 w-5 text-blue-600 mr-3" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" fill="none" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
-                  </svg>
-                  <span className="text-blue-700 font-medium">Analysis in progress...</span>
+                <div className="inline-flex items-center gap-3 px-6 py-3 bg-primary/10 rounded-full border border-primary/20">
+                  <Loader2 className="h-5 w-5 text-primary animate-spin" />
+                  <span className="text-primary font-medium">Analysis in progress...</span>
                 </div>
               </div>
             )}
@@ -243,12 +377,7 @@ function App() {
       </main>
 
       {/* Footer */}
-      <footer className="bg-gray-100 border-t mt-16">
-        <div className="max-w-7xl mx-auto px-4 py-6 text-center text-gray-500 text-sm">
-          <p>Legal Strategy Council - MongoDB Hackathon Project</p>
-          <p className="mt-1">Powered by Groq Llama 3.3 70B & MongoDB Atlas</p>
-        </div>
-      </footer>
+      <Footer />
     </div>
   )
 }

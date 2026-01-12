@@ -96,12 +96,48 @@ def get_agent_messages_collection() -> Collection:
 # ============================================================================
 
 def _safe_create_index(collection, index_spec, **kwargs):
-    """Create an index, ignoring errors if it already exists or has conflicts."""
+    """Create an index, handling conflicts by dropping existing indexes first."""
     try:
+        # Determine expected index name (MongoDB auto-generates if not specified)
+        if isinstance(index_spec, str):
+            expected_name = f"{index_spec}_1"  # MongoDB default naming for single field
+        elif isinstance(index_spec, list):
+            # Compound index - MongoDB generates name from keys
+            expected_name = "_".join([f"{k}_{v}" for k, v in index_spec])
+        else:
+            expected_name = None
+        
+        # Check if index with same name exists and drop it to avoid conflicts
+        if expected_name:
+            try:
+                existing_indexes = list(collection.list_indexes())
+                for existing_index in existing_indexes:
+                    existing_name = existing_index.get("name")
+                    if existing_name == expected_name:
+                        # Drop the existing index to recreate with correct properties
+                        collection.drop_index(existing_name)
+                        print(f"Dropped existing index {existing_name} on {collection.name} to recreate with correct properties")
+                        break
+            except Exception as list_error:
+                # If we can't list indexes, continue anyway
+                pass
+        
+        # Create the index
         collection.create_index(index_spec, **kwargs)
     except Exception as e:
-        # Index might already exist or have conflicting data - not critical
-        print(f"Note: Index {index_spec} on {collection.name}: {e}")
+        # Index might already exist with same properties or other error - not critical
+        error_msg = str(e)
+        if "IndexKeySpecsConflict" in error_msg:
+            # Try to drop and recreate
+            try:
+                if expected_name:
+                    collection.drop_index(expected_name)
+                    collection.create_index(index_spec, **kwargs)
+                    print(f"Resolved index conflict for {expected_name} on {collection.name}")
+            except Exception as retry_error:
+                print(f"Note: Could not resolve index conflict for {index_spec} on {collection.name}: {retry_error}")
+        elif "already exists" not in error_msg.lower():
+            print(f"Note: Index {index_spec} on {collection.name}: {e}")
 
 
 def init_collections():

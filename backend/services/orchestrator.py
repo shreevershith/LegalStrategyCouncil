@@ -12,18 +12,21 @@ Emits SSE events for real-time frontend updates.
 """
 import asyncio
 import json
-from typing import AsyncGenerator, Dict, Any, Optional, List
+from typing import AsyncGenerator, Dict, Any, Optional, List, TYPE_CHECKING
 from datetime import datetime
 
-from agents.harvey import HarveyAgent
-from agents.louis import LouisAgent
-from agents.tanner import TannerAgent
-from agents.jessica import JessicaAgent
 from services.conflict_detector import ConflictDetector
 from services.mongo_utils import write_agent_message, get_arguments, get_counterarguments
 from models.schemas import Case
 import database
 import config
+
+# Avoid circular imports by importing agents inside __init__
+if TYPE_CHECKING:
+    from agents.harvey import HarveyAgent
+    from agents.louis import LouisAgent
+    from agents.tanner import TannerAgent
+    from agents.jessica import JessicaAgent
 
 
 class Orchestrator:
@@ -39,6 +42,12 @@ class Orchestrator:
     """
 
     def __init__(self):
+        # Import agents here to avoid circular import
+        from agents.harvey import HarveyAgent
+        from agents.louis import LouisAgent
+        from agents.tanner import TannerAgent
+        from agents.jessica import JessicaAgent
+        
         self.harvey = HarveyAgent()
         self.louis = LouisAgent()
         self.tanner = TannerAgent()
@@ -165,10 +174,11 @@ class Orchestrator:
                     [current_strategy, louis_result]
                 )
 
+                print(f"[Orchestrator] Tanner completed round {round_num}, content length: {len(tanner_result.get('content', ''))}")
                 yield self._format_sse_event("agent_completed", {
                     "agent": config.AGENT_NAMES["tanner"],
                     "case_id": case_id,
-                    "content": tanner_result["content"],
+                    "content": tanner_result.get("content", ""),
                     "attack_vectors": tanner_result.get("attack_vectors", []),
                     "round": round_num,
                     "run_id": tanner_result.get("run_id")
@@ -265,10 +275,12 @@ class Orchestrator:
                 print(f"[Orchestrator] Jessica ERROR: {e}")
                 raise
 
+            print(f"[Orchestrator] Jessica completed, final_strategy length: {len(jessica_result.get('final_strategy', ''))}")
+            print(f"[Orchestrator] Jessica result keys: {jessica_result.keys()}")
             yield self._format_sse_event("agent_completed", {
                 "agent": config.AGENT_NAMES["jessica"],
                 "case_id": case_id,
-                "content": jessica_result["final_strategy"],
+                "content": jessica_result.get("final_strategy", ""),
                 "rejected_alternatives": jessica_result.get("rejected_alternatives", []),
                 "run_id": jessica_result.get("run_id")
             })
