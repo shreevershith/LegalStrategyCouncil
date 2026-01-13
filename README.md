@@ -1,6 +1,6 @@
 # Legal Strategy Council
 
-A multi-agent legal strategy system built for the MongoDB Hackathon. This application demonstrates **Statement 2: Multi-Agent Collaboration** using MongoDB Atlas as the coordination backbone.  
+A multi-agent legal strategy system built for the **MongoDB Agentic Orchestration and Collaboration Hackathon 2026**. This application demonstrates **Statement 2: Multi-Agent Collaboration** using MongoDB Atlas as the coordination backbone.  
 
 **Statement Two: Multi-Agent Collaboration**  
 Develop a multi-agent system in which specialized agents explore, assign tasks, and communicate with one another, using MongoDB to organize and oversee contexts. How do agents convey their skills, identify suitable peers for a sub-task, share context effectively within token limits, and perform intricate tasks resulting from successful collaborations?
@@ -432,4 +432,4 @@ Build a multi-agent legal strategy system where multiple AI agents collaborate t
 
 ## License
 
-MIT License - Built for MongoDB Hackathon 2026
+MIT License - Built for MongoDB Agentic Orchestration and Collaboration Hackathon 2026
